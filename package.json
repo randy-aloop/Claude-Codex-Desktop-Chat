@@ -1,6 +1,8 @@
 {
   "name": "claude-codex-mailbox",
-  "version": "0.2.0",
+  "version": "0.4.0",
+  "bin": { "reviewloop-install": "./install.js", "reviewloop-daemon": "./daemon.js", "rl": "./rl.js" },
+  "files": ["shim.js", "daemon.js", "rl.js", "install.js", "prompts.md", "config.json.example", "README.md", "LICENSE"],
   "description": "Local MCP bridge pairing a Codex worker thread with a Claude reviewer thread — opt-in keys, ticketed handoffs, human-gated rulings, append-only ledger. Zero dependencies.",
   "license": "MIT",
   "engines": { "node": ">=18" },

@@ -119,20 +119,25 @@ function openTickets(pairId) {
 
 const methods = {
 
-  health() { return { app: 'reviewloop', pid: process.pid, version: '0.3.0' }; },
+  health() { return { app: 'reviewloop', pid: process.pid, version: '0.4.0' }; },
 
-  loop_setup({ codex_thread_id, claude_thread_id, label, repo, reviewer_paths }) {
+  loop_setup({ codex_thread_id, claude_thread_id, label, repo, reviewer_paths, stop }) {
     if (!codex_thread_id || !claude_thread_id) throw uerr('codex_thread_id and claude_thread_id are both required.');
     if (repo && !fs.existsSync(repo)) throw uerr(`repo path does not exist: ${repo}`);
     const lab = (label && String(label).trim()) || 'run-' + rid('X').slice(2).toLowerCase();
     const wkey = rid('WRK'), rkey = rid('REV');
     const id = rid('PAIR');
     const rpaths = Array.isArray(reviewer_paths) ? reviewer_paths.map(s => normPath(String(s)).toLowerCase()) : [];
+    const stopPolicy = {
+      max_directives: stop && Number.isFinite(Number(stop.max_directives)) ? Number(stop.max_directives) : null,
+      max_minutes: stop && Number.isFinite(Number(stop.max_minutes)) ? Number(stop.max_minutes) : null,
+      on_context_warning: (stop && stop.on_context_warning) || 'finish_unit'
+    };
     state.keys[wkey] = { key: wkey, role: 'worker', label: lab, created: now(), last_seen: now(), pair: id };
     state.keys[rkey] = { key: rkey, role: 'reviewer', label: lab, created: now(), last_seen: now(), pair: id };
     state.pairs[id] = {
       id, worker: wkey, reviewer: rkey, label: lab, repo: repo || null, reviewer_paths: rpaths,
-      dseq: 0, created: now(), ended: null, winding_down: false,
+      dseq: 0, created: now(), ended: null, winding_down: false, stop: stopPolicy,
       setup: {
         codex_thread_id: String(codex_thread_id).trim(),
         claude_thread_id: String(claude_thread_id).trim(),
@@ -367,7 +372,17 @@ const methods = {
     const warnings = [];
     if (ruling.verdict !== 'abort' && !ruling.stop_when) warnings.push('No stop_when — the worker will pick its own stopping point.');
     if (ruling.done === undefined) ruling.done = false;
+    const pol = p.stop || {};
+    if (pol.max_directives && p.dseq + 1 > pol.max_directives && !ruling.done) {
+      throw uerr(`Stop policy: directive budget (${pol.max_directives}) exhausted — this ruling must carry done:true to close the run.`);
+    }
     p.dseq = (p.dseq || 0) + 1;
+    if (pol.max_directives && p.dseq >= pol.max_directives && !p.winding_down) {
+      p.winding_down = true; ledger('winding_down', { pair: p.id, trigger: `stop policy: directive ${p.dseq}/${pol.max_directives}` });
+    }
+    if (pol.max_minutes && (now() - p.created) > pol.max_minutes * 60_000 && !p.winding_down) {
+      p.winding_down = true; ledger('winding_down', { pair: p.id, trigger: `stop policy: ${pol.max_minutes} minutes elapsed` });
+    }
     t.ruling = {
       directive_id: p.dseq,
       verdict: ruling.verdict,
@@ -497,10 +512,13 @@ FOR EVERY SUBMISSION:
 2. Verify independently where it matters: read the diff, run the expected assertion. Review against the tree, not the transcript.
 3. Draft the ruling (approve | revise | rule | abort; relay verbatim; stop_when; expected; do_not; standing_rule for any fix that must never recur; done only when the WHOLE task is finished). Show the human; submit after approval; keep rulings terse — reference evidence by path.
 
-STOPPING (mandatory):
+STOPPING (mandatory):${p.stop && p.stop.max_directives ? `
+- Stop policy: at most ${p.stop.max_directives} directives; the daemon flags winding_down at the budget and rejects further non-closing rulings.` : ''}${p.stop && p.stop.max_minutes ? `
+- Stop policy: ${p.stop.max_minutes} minutes wall-clock; winding_down after that.` : ''}
 - Worker handoff carries context_warning, or the pair shows winding_down → finish the current unit, then close with verdict approve/rule and done:true.
 - Your own context is running low → same: close cleanly with done:true and tell the human.
-- You judge the work complete → approve with done:true.`;
+- You judge the work complete → approve with done:true.
+- The human can always close or abort directly.`;
 }
 
 function findRollout(threadId) {

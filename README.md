@@ -17,7 +17,24 @@ Zero dependencies. Node ≥ 18. Works on Windows (no unix sockets, no Bun).
 
 State lives in `~/.reviewloop/` (override with `REVIEWLOOP_HOME`): `state.json`, `ledger.jsonl` (append-only audit), `standing-rules.md`, `daemon.log`, `daemon.json` (port/pid/token).
 
-## Verify first (no AI involved)
+## Install (any user, one command)
+
+```
+npm install -g claude-codex-mailbox        # or: npm i -g <path-to>.tgz / github:USER/claude-codex-mailbox
+reviewloop-install
+```
+
+The installer appends the MCP block to your Codex `config.toml` (backup written; honors `$CODEX_HOME`, `~/.codex`, or `--codex-config <path>` — desktop-app users pass their app home's config), registers with Claude via `claude mcp add --scope user` (prints the manual snippet if the CLI is absent), configures the worker heartbeat (`--sessions-dir` to override), and runs the selftest. `reviewloop-install --uninstall` reverts both sides cleanly.
+
+Then restart Codex, and run the standardized flow:
+
+1. `loop_setup {codex_thread_id, claude_thread_id, repo?, reviewer_paths?, stop?}` — from any session with the tools, or `rl loop_setup @setup.json`.
+2. Paste the returned `worker_prompt` into the Codex thread, `reviewer_prompt` into the Claude thread.
+3. Both sides run `loop_confirm` and report **PAIRING CONFIRMED** (or FAILED on a thread-id mismatch).
+4. Give the task in the Claude thread, including the model and effort for Codex (`codex_settings` rides each directive).
+5. The run stops when: your **stop policy** hits (`stop: {max_directives, max_minutes}` — enforced by the daemon, which refuses further non-closing rulings past the budget), either side signals a **context limit** (`context_warning` → winding_down), the reviewer judges the work **complete** (`done: true`), or you say so.
+
+## Verify (no AI involved)
 
 ```
 node shim.js --selftest

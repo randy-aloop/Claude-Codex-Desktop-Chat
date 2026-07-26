@@ -18,7 +18,7 @@ const { spawn } = require('child_process');
 const HOME = process.env.REVIEWLOOP_HOME || path.join(os.homedir(), '.reviewloop');
 const PORTFILE = path.join(HOME, 'daemon.json');
 const DAEMON = path.join(__dirname, 'daemon.js');
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 
 /* ---------------- daemon client ---------------- */
 
@@ -99,7 +99,8 @@ const TOOLS = [
       claude_thread_id: str('the selected Claude thread/session id (reviewer)'),
       label: str('optional short run name'),
       repo: str('optional absolute path to the git repo the worker operates on'),
-      reviewer_paths: { type: 'array', items: { type: 'string' }, description: 'optional path prefixes owned by the reviewer (records, scorecards)' }
+      reviewer_paths: { type: 'array', items: { type: 'string' }, description: 'optional path prefixes owned by the reviewer (records, scorecards)' },
+      stop: { type: 'object', description: 'user-defined stop policy: {max_directives?: number, max_minutes?: number, on_context_warning?: "finish_unit"}. Omitted fields = no limit; context_warning and reviewer judgement (done:true) always apply.', additionalProperties: true }
     }, ['codex_thread_id', 'claude_thread_id'])
   },
   {
