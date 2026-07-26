@@ -1,6 +1,8 @@
-# reviewloop
+# claude-codex-mailbox
 
-A local MCP bridge that pairs one **Codex thread (worker)** with one **Claude thread (reviewer)** using opt-in keys, then carries a review loop between them: `submit_for_review → await_work → submit_ruling → await_ruling`.
+A local MCP bridge that pairs one **Codex thread (worker)** with one **Claude thread (reviewer)** using opt-in keys, then carries a review loop — or a free-form message exchange — between them: `submit_for_review → await_work → submit_ruling → await_ruling`.
+
+(The MCP server and its tools are named `reviewloop` internally; keep that name in your MCP configs.)
 
 Born from a practical problem: the Codex desktop app owns its threads in memory, so nothing outside may safely write to them. reviewloop inverts the direction — the worker calls out through its own MCP server, so there is never a second writer, and a thread that never registers is structurally unreachable.
 
