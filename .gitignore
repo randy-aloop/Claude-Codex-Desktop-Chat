@@ -1,0 +1,6 @@
+node_modules/
+*.log
+ruling-*.json
+.reviewloop/
+.DS_Store
+Thumbs.db

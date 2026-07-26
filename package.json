@@ -1,0 +1,12 @@
+{
+  "name": "reviewloop",
+  "version": "0.1.0",
+  "description": "Local MCP bridge pairing a Codex worker thread with a Claude reviewer thread — opt-in keys, ticketed handoffs, human-gated rulings, append-only ledger. Zero dependencies.",
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "keywords": ["mcp", "codex", "claude", "agent-collaboration", "review-loop", "model-context-protocol"],
+  "scripts": {
+    "selftest": "node shim.js --selftest",
+    "stop": "node daemon.js --stop"
+  }
+}
