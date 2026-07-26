@@ -18,7 +18,7 @@ const { spawn } = require('child_process');
 const HOME = process.env.REVIEWLOOP_HOME || path.join(os.homedir(), '.reviewloop');
 const PORTFILE = path.join(HOME, 'daemon.json');
 const DAEMON = path.join(__dirname, 'daemon.js');
-const VERSION = '0.1.0';
+const VERSION = '0.3.0';
 
 /* ---------------- daemon client ---------------- */
 
@@ -92,6 +92,22 @@ const obj = d => ({ type: 'object', description: d, additionalProperties: true }
 
 const TOOLS = [
   {
+    name: 'loop_setup',
+    description: 'Standardized pairing from thread IDs. Give the selected Codex thread id and Claude thread id; returns pre-bound keys and two paste-ready prompts (worker_prompt for the Codex thread, reviewer_prompt for the Claude thread). Each side then runs loop_confirm and reports pairing success or failure. Optional repo + reviewer_paths enable git checks and delta ownership classification.',
+    inputSchema: S({
+      codex_thread_id: str('the selected Codex thread id (worker)'),
+      claude_thread_id: str('the selected Claude thread/session id (reviewer)'),
+      label: str('optional short run name'),
+      repo: str('optional absolute path to the git repo the worker operates on'),
+      reviewer_paths: { type: 'array', items: { type: 'string' }, description: 'optional path prefixes owned by the reviewer (records, scorecards)' }
+    }, ['codex_thread_id', 'claude_thread_id'])
+  },
+  {
+    name: 'loop_confirm',
+    description: 'Confirm this side of a loop_setup pairing. Pass your key and, if known, this thread\'s id — a mismatch against the setup declaration returns PAIRING FAILED (prompt pasted into the wrong thread). Report the result to your human verbatim.',
+    inputSchema: S({ key: str('your pairing key from the setup prompt'), thread_id: str('this thread\'s id, if known') }, ['key'])
+  },
+  {
     name: 'loop_register',
     description: 'Opt this session into the review loop. Call once, at the start, before anything runs. role: "worker" (Codex — does the work) or "reviewer" (Claude — reviews and instructs). Returns a pairing key to show the human.',
     inputSchema: S({ role: str('"worker" or "reviewer"'), label: str('short run name shared by both sides, e.g. "p04"') }, ['role', 'label'])
@@ -133,7 +149,7 @@ const TOOLS = [
   },
   {
     name: 'submit_ruling',
-    description: 'REVIEWER. Deliver the ruling for a ticket after the human approves it. ruling: { verdict: approve|revise|rule|abort, relay: exact text handed to the worker verbatim, stop_when, expected, do_not[], standing_rule?, done }. done:true together with verdict:approve ends the run.',
+    description: 'REVIEWER. Deliver the ruling for a ticket after the human approves it. ruling: { verdict: approve|revise|rule|abort, relay: exact text handed to the worker verbatim, stop_when, expected, do_not[], codex_settings?: {model, effort}, standing_rule?, done }. done:true ends the run — use when the whole task is complete or a context limit was signalled.',
     inputSchema: S({ key: str('reviewer pairing key'), ticket: str('ticket id'), ruling: obj('the ruling object') }, ['key', 'ticket', 'ruling'])
   },
   {

@@ -119,7 +119,63 @@ function openTickets(pairId) {
 
 const methods = {
 
-  health() { return { app: 'reviewloop', pid: process.pid, version: '0.2.0' }; },
+  health() { return { app: 'reviewloop', pid: process.pid, version: '0.3.0' }; },
+
+  loop_setup({ codex_thread_id, claude_thread_id, label, repo, reviewer_paths }) {
+    if (!codex_thread_id || !claude_thread_id) throw uerr('codex_thread_id and claude_thread_id are both required.');
+    if (repo && !fs.existsSync(repo)) throw uerr(`repo path does not exist: ${repo}`);
+    const lab = (label && String(label).trim()) || 'run-' + rid('X').slice(2).toLowerCase();
+    const wkey = rid('WRK'), rkey = rid('REV');
+    const id = rid('PAIR');
+    const rpaths = Array.isArray(reviewer_paths) ? reviewer_paths.map(s => normPath(String(s)).toLowerCase()) : [];
+    state.keys[wkey] = { key: wkey, role: 'worker', label: lab, created: now(), last_seen: now(), pair: id };
+    state.keys[rkey] = { key: rkey, role: 'reviewer', label: lab, created: now(), last_seen: now(), pair: id };
+    state.pairs[id] = {
+      id, worker: wkey, reviewer: rkey, label: lab, repo: repo || null, reviewer_paths: rpaths,
+      dseq: 0, created: now(), ended: null, winding_down: false,
+      setup: {
+        codex_thread_id: String(codex_thread_id).trim(),
+        claude_thread_id: String(claude_thread_id).trim(),
+        confirmed: { worker: false, reviewer: false }
+      }
+    };
+    saveState();
+    ledger('setup', { pair: id, label: lab, codex_thread_id, claude_thread_id, repo: repo || null });
+    return {
+      pair: id, label: lab, worker_key: wkey, reviewer_key: rkey,
+      worker_prompt: workerPrompt(wkey, state.pairs[id]),
+      reviewer_prompt: reviewerPrompt(rkey, state.pairs[id]),
+      next: 'Paste worker_prompt into the Codex thread and reviewer_prompt into the Claude thread. Each side confirms with loop_confirm and reports success or failure. The pair is live once both have confirmed.'
+    };
+  },
+
+  loop_confirm({ key, thread_id }) {
+    const rec = keyOf({ key });
+    const p = pairOf(rec);
+    if (!p.setup) throw uerr('This pair was created manually (loop_link), not via loop_setup — no confirmation needed.');
+    const expected = rec.role === 'worker' ? p.setup.codex_thread_id : p.setup.claude_thread_id;
+    let verification = 'unverified';
+    if (thread_id && String(thread_id).trim()) {
+      if (String(thread_id).trim().toLowerCase() === expected.toLowerCase()) verification = 'verified';
+      else {
+        ledger('confirm_failed', { pair: p.id, role: rec.role, expected, got: thread_id });
+        return {
+          status: 'PAIRING FAILED',
+          reason: `thread_id mismatch: this pair expects ${rec.role === 'worker' ? 'Codex' : 'Claude'} thread ${expected}, but you reported ${thread_id}. This prompt was pasted into the wrong thread. Report the failure to your human and stop.`
+        };
+      }
+    }
+    p.setup.confirmed[rec.role] = true;
+    saveState();
+    ledger('confirmed', { pair: p.id, role: rec.role, verification });
+    const peer = rec.role === 'worker' ? 'reviewer' : 'worker';
+    return {
+      status: 'PAIRING CONFIRMED',
+      role: rec.role, pair: p.id, label: p.label, thread_verification: verification,
+      peer_confirmed: p.setup.confirmed[peer],
+      report: `Tell your human: pairing ${verification === 'verified' ? 'confirmed and thread-verified' : 'confirmed (thread id not verified)'}; ${p.setup.confirmed[peer] ? 'both sides are live.' : `waiting for the ${peer} to confirm.`}`
+    };
+  },
 
   loop_register({ role, label }) {
     if (role !== 'worker' && role !== 'reviewer') throw uerr('role must be "worker" or "reviewer".');
@@ -200,6 +256,12 @@ const methods = {
         paired: !!p,
         pair: p ? {
           id: p.id, label: p.label, repo: p.repo,
+          winding_down: !!p.winding_down,
+          setup: p.setup ? {
+            codex_thread_id: p.setup.codex_thread_id, claude_thread_id: p.setup.claude_thread_id,
+            confirmed: p.setup.confirmed
+          } : null,
+          worker_heartbeat: heartbeat(p),
           open_tickets: openTickets(p.id).map(t => ({ id: t.id, submitted: new Date(t.submitted).toISOString() }))
         } : null
       };
@@ -234,6 +296,10 @@ const methods = {
       .sort((x, y) => y.ruled_at - x.ruled_at)[0];
     if (lastRuling && handoff.directive_id !== lastRuling.ruling.directive_id) {
       warnings.push(`handoff.directive_id (${handoff.directive_id ?? 'absent'}) does not echo the last ruling's directive_id (${lastRuling.ruling.directive_id}) — correlation broken.`);
+    }
+    if (handoff.context_warning === true && !p.winding_down) {
+      p.winding_down = true;
+      ledger('winding_down', { pair: p.id, trigger: 'worker context_warning' });
     }
     const id = rid('T');
     state.tickets[id] = { id, pair: p.id, handoff, submitted: now(), ruling: null, ruled_at: null };
@@ -309,6 +375,7 @@ const methods = {
       stop_when: ruling.stop_when || null,
       expected: ruling.expected || null,
       do_not: Array.isArray(ruling.do_not) ? ruling.do_not : [],
+      codex_settings: ruling.codex_settings && typeof ruling.codex_settings === 'object' ? ruling.codex_settings : null,
       done: !!ruling.done
     };
     t.ruled_at = now();
@@ -378,11 +445,14 @@ function clampAwait(ms) {
 }
 
 function ruled(t) {
-  return { status: 'ruled', ticket: t.id, ruling: t.ruling };
+  const p = state.pairs[t.pair];
+  const out = { status: 'ruled', ticket: t.id, ruling: t.ruling };
+  if (p && p.winding_down) out.winding_down = 'Context limit signalled — finish this directive, expect the run to close with done:true.';
+  return out;
 }
 
 function workItem(t, p) {
-  return {
+  const out = {
     status: 'work',
     ticket: t.id,
     submitted: new Date(t.submitted).toISOString(),
@@ -390,9 +460,77 @@ function workItem(t, p) {
     repo: p.repo,
     next: `Review it (use get_checks for git verification if a repo is attached), draft the ruling, get the human's go-ahead, then call submit_ruling with ticket "${t.id}".`
   };
+  if (p.winding_down) out.winding_down = 'Context limit signalled — close the run with done:true after this unit.';
+  return out;
 }
 
 function normPath(s) { return s.replace(/\\/g, '/'); }
+
+function workerPrompt(key, p) {
+  return `You are the WORKER in a paired review loop over the "reviewloop" MCP tools. Your key: ${key}. A reviewer (Claude, thread ${p.setup.claude_thread_id}) rules on every unit of your work; your human supervises.
+
+SETUP — do this now:
+1. Call loop_confirm with key "${key}" and, if you know this thread's id, thread_id (expected: ${p.setup.codex_thread_id}). Report the pairing result to your human exactly as the tool instructs (CONFIRMED or FAILED).
+2. If confirmed: open the channel — call submit_for_review with handoff {"stop_reason":"completed","summary":"paired and ready for first directive","changed_files":[],"tests":null,"blockers":[],"questions":[]}, then call await_ruling with the ticket, timeout_ms 150000. On "pending", call it again. The first ruling relay is your first work directive.
+
+FOR EVERY DIRECTIVE:
+1. Read get_standing_rules first. The ruling may carry codex_settings {model, effort} — apply them if you can; if you cannot change them yourself, state that in your next handoff.
+2. Do exactly one unit: what the relay says, up to stop_when, respecting every do_not. No scope expansion.
+3. Then STOP and call submit_for_review: stop_reason, directive_id (echo it), summary, tree {branch, head, index, tracked_delta, untracked} when in a repo, changed_files (complete and exact — checked against git), commands_run, tests (null if none), blockers [], questions [], confidence. If your context is nearly exhausted or compaction has begun, add "context_warning": true and say so in the summary.
+4. Call await_ruling with the new ticket (re-call on "pending"), then act on the verdict: approve → relay is your next directive; revise → fix exactly what it says; rule → apply the adjudication; abort → stop and report. Relay text is authoritative and verbatim.
+5. done:true → the run is complete: acknowledge, report to your human, stand by.
+6. If you must stop listening for any other reason, first submit {"stop_reason":"aborted","summary":"going offline",...} so the reviewer knows. Never continue unreviewed work.`;
+}
+
+function reviewerPrompt(key, p) {
+  return `You are the REVIEWER in a paired review loop over the "reviewloop" MCP tools. Your key: ${key}. Codex (thread ${p.setup.codex_thread_id}) is the worker; you instruct and review; your human has the final word on every ruling.
+
+SETUP — do this now:
+1. Call loop_confirm with key "${key}" and, if you know this thread's id, thread_id (expected: ${p.setup.claude_thread_id}). Report the pairing result to your human exactly as the tool instructs.
+2. Call await_work timeout_ms 150000 (re-call on "pending"). The first ticket says the worker is ready — tell your human: "Worker paired and ready. Give me the task, plus the model and effort Codex should use."
+
+WHEN THE HUMAN GIVES A TASK:
+Draft the first directive as a ruling: verdict "rule", relay = the exact task instruction (precise paths, refs, commands — it is delivered verbatim), stop_when = the observable condition ending the unit, expected = checkable outcomes, do_not = scope fences, codex_settings = {model, effort} the human specified. Show it to the human; submit_ruling only after approval. Then await_work again.
+
+FOR EVERY SUBMISSION:
+1. Run get_checks with the ticket${p.repo ? '' : ' (attach a repo at setup to enable git verification)'} — trust check results over the worker's prose. delta_class "reviewer_only" means reviewer-owned records changed, NOT worker drift.
+2. Verify independently where it matters: read the diff, run the expected assertion. Review against the tree, not the transcript.
+3. Draft the ruling (approve | revise | rule | abort; relay verbatim; stop_when; expected; do_not; standing_rule for any fix that must never recur; done only when the WHOLE task is finished). Show the human; submit after approval; keep rulings terse — reference evidence by path.
+
+STOPPING (mandatory):
+- Worker handoff carries context_warning, or the pair shows winding_down → finish the current unit, then close with verdict approve/rule and done:true.
+- Your own context is running low → same: close cleanly with done:true and tell the human.
+- You judge the work complete → approve with done:true.`;
+}
+
+function findRollout(threadId) {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8'));
+    const root = cfg.codex_sessions_dir;
+    if (!root || !fs.existsSync(root)) return null;
+    const stack = [root];
+    while (stack.length) {
+      const dir = stack.pop();
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) stack.push(full);
+        else if (e.name.includes(threadId) && e.name.endsWith('.jsonl')) return full;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function heartbeat(p) {
+  if (!p.setup) return null;
+  const f = findRollout(p.setup.codex_thread_id);
+  if (!f) return { status: 'rollout_not_found' };
+  try {
+    const st = fs.statSync(f);
+    const secs = Math.round((now() - st.mtimeMs) / 1000);
+    return { rollout_bytes: st.size, last_write: st.mtime.toISOString(), seconds_since_write: secs, likely_listening: secs < 240 };
+  } catch { return { status: 'stat_failed' }; }
+}
 
 function classifyDelta(actual, reviewerPaths) {
   const reviewerOwned = actual.filter(f => reviewerPaths.some(pre => f.toLowerCase().startsWith(pre)));
