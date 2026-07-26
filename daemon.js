@@ -119,7 +119,7 @@ function openTickets(pairId) {
 
 const methods = {
 
-  health() { return { app: 'reviewloop', pid: process.pid, version: '0.1.0' }; },
+  health() { return { app: 'reviewloop', pid: process.pid, version: '0.2.0' }; },
 
   loop_register({ role, label }) {
     if (role !== 'worker' && role !== 'reviewer') throw uerr('role must be "worker" or "reviewer".');
@@ -148,7 +148,7 @@ const methods = {
     };
   },
 
-  loop_link({ key_a, key_b, repo }) {
+  loop_link({ key_a, key_b, repo, reviewer_paths }) {
     const a = state.keys[(key_a || '').trim().toUpperCase()];
     const b = state.keys[(key_b || '').trim().toUpperCase()];
     if (!a || !b) throw uerr('Both keys must exist and be unexpired.');
@@ -157,11 +157,12 @@ const methods = {
     const worker = a.role === 'worker' ? a : b;
     const reviewer = a.role === 'reviewer' ? a : b;
     if (repo && !fs.existsSync(repo)) throw uerr(`repo path does not exist: ${repo}`);
+    const rpaths = Array.isArray(reviewer_paths) ? reviewer_paths.map(s => normPath(String(s)).toLowerCase()) : [];
     const id = rid('PAIR');
     state.pairs[id] = {
       id, worker: worker.key, reviewer: reviewer.key,
-      label: worker.label, repo: repo || null,
-      created: now(), ended: null
+      label: worker.label, repo: repo || null, reviewer_paths: rpaths,
+      dseq: 0, created: now(), ended: null
     };
     worker.pair = id; reviewer.pair = id;
     saveState();
@@ -225,6 +226,15 @@ const methods = {
     const warnings = [];
     if (!handoff.summary && !handoff.stop_reason) warnings.push('handoff has neither "summary" nor "stop_reason" — the reviewer will lack context.');
     if (handoff.changed_files && !Array.isArray(handoff.changed_files)) warnings.push('"changed_files" should be an array of paths.');
+    for (const f of ['tests', 'blockers', 'questions']) {
+      if (!(f in handoff)) warnings.push(`"${f}" missing — include it even when empty/null so absence is deliberate, not forgotten.`);
+    }
+    const lastRuling = Object.values(state.tickets)
+      .filter(x => x.pair === p.id && x.ruling && x.ruling.directive_id)
+      .sort((x, y) => y.ruled_at - x.ruled_at)[0];
+    if (lastRuling && handoff.directive_id !== lastRuling.ruling.directive_id) {
+      warnings.push(`handoff.directive_id (${handoff.directive_id ?? 'absent'}) does not echo the last ruling's directive_id (${lastRuling.ruling.directive_id}) — correlation broken.`);
+    }
     const id = rid('T');
     state.tickets[id] = { id, pair: p.id, handoff, submitted: now(), ruling: null, ruled_at: null };
     saveState();
@@ -291,7 +301,9 @@ const methods = {
     const warnings = [];
     if (ruling.verdict !== 'abort' && !ruling.stop_when) warnings.push('No stop_when — the worker will pick its own stopping point.');
     if (ruling.done === undefined) ruling.done = false;
+    p.dseq = (p.dseq || 0) + 1;
     t.ruling = {
+      directive_id: p.dseq,
       verdict: ruling.verdict,
       relay: ruling.relay || '',
       stop_when: ruling.stop_when || null,
@@ -332,16 +344,24 @@ const methods = {
       const actual = diffOut.split('\n').map(s => s.trim()).filter(Boolean).map(normPath);
       const untracked = statusOut.split('\n').filter(l => l.startsWith('??')).map(l => normPath(l.slice(3).trim()));
       if (reported === null) {
+        const cls = classifyDelta(actual, p.reviewer_paths || []);
         return {
           status: 'partial',
           reason: 'handoff.changed_files missing — cannot compare report vs reality.',
+          delta_class: cls.klass, reviewer_owned: cls.reviewerOwned, worker_owned: cls.workerOwned,
           actual_changed: actual, untracked
         };
       }
       const missing_in_report = actual.filter(f => !reported.includes(f));
       const extra_in_report = reported.filter(f => !actual.includes(f));
+      const cls = classifyDelta(actual, p.reviewer_paths || []);
       return {
         status: missing_in_report.length || extra_in_report.length ? 'mismatch' : 'match',
+        delta_class: cls.klass,
+        reviewer_owned: cls.reviewerOwned, worker_owned: cls.workerOwned,
+        note: cls.klass === 'reviewer_only'
+          ? 'All tracked changes are reviewer-owned record files. This is NOT a worker drift and NOT a tree disagreement — rule it as an authorized reviewer commit, separate from the worker task.'
+          : null,
         reported, actual_changed: actual,
         missing_in_report, extra_in_report, untracked
       };
@@ -373,6 +393,18 @@ function workItem(t, p) {
 }
 
 function normPath(s) { return s.replace(/\\/g, '/'); }
+
+function classifyDelta(actual, reviewerPaths) {
+  const reviewerOwned = actual.filter(f => reviewerPaths.some(pre => f.toLowerCase().startsWith(pre)));
+  const workerOwned = actual.filter(f => !reviewerOwned.includes(f));
+  let klass = 'clean';
+  if (actual.length) {
+    if (!workerOwned.length) klass = 'reviewer_only';
+    else if (reviewerOwned.length) klass = 'mixed';
+    else klass = 'worker';
+  }
+  return { klass, reviewerOwned, workerOwned };
+}
 
 function git(repo, args) {
   return new Promise((resolve, reject) => {

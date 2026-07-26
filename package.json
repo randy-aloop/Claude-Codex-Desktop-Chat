@@ -1,6 +1,6 @@
 {
   "name": "claude-codex-mailbox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local MCP bridge pairing a Codex worker thread with a Claude reviewer thread — opt-in keys, ticketed handoffs, human-gated rulings, append-only ledger. Zero dependencies.",
   "license": "MIT",
   "engines": { "node": ">=18" },

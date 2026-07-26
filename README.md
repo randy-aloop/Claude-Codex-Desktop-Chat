@@ -102,12 +102,17 @@ For free-form exchanges rather than work units: the worker submits a "mailbox op
 - **Ledger.** Every register/link/submit/ruling/unlink appends to `ledger.jsonl`.
 - **Daemon lifecycle.** First shim spawns it; a newer daemon supersedes an older via the portfile. `node daemon.js --stop` to stop.
 
-## Known limits (v0.1)
+## v0.2
 
-- Handoff/ruling schemas validated shallowly (verdict enum + relay required; the rest warnings).
-- `get_checks` implements report-vs-reality only; scope assertions, diff budgets, invariants are planned.
-- No git checkpointing or rollout watchdog — orchestrator-layer, stacks on top.
-- Worker feedback queued for v0.2 (proposed by the Codex side itself, over the loop): `directive_id` for correlation, required-but-nullable `tests`/`blockers`/`questions`, state-changing vs read-only command split.
+- **Delta ownership classification.** `loop_link` accepts `reviewer_paths` (path prefixes owned by the reviewer — scorecards, review records). `get_checks` classifies every tracked change as `reviewer_only | worker | mixed | clean`, so a reviewer-record edit no longer reads as a tree disagreement and never costs a false-stop adjudication.
+- **`directive_id`.** Every ruling is stamped with a monotonic id; workers echo it in the next handoff; a broken echo raises a warning. (Proposed by the Codex side itself, over the loop.)
+- **Required-but-nullable `tests` / `blockers` / `questions`** — absence is now deliberate, not forgotten.
+
+## Known limits
+
+- Ruling/handoff schemas otherwise validated shallowly.
+- Scope assertions, diff budgets, invariants, git checkpointing, rollout watchdog — orchestrator-layer, stack on top.
+- State-changing vs read-only command split: convention in the worker prompt, not yet enforced.
 
 ## License
 
