@@ -1,4 +1,4 @@
-# claude-codex-mailbox
+# Claude-Codex Desktop Chat Pairing
 
 Pair a **Codex thread (worker)** with a **Claude thread (reviewer)** and run a supervised work loop between them: Codex does the work, Claude reviews and instructs, a human gates every ruling, and everything lands in an audit ledger.
 
@@ -31,7 +31,7 @@ State lives in `~/.reviewloop/` (override: `REVIEWLOOP_HOME`): `state.json` (pai
 ## Install
 
 ```
-npm install -g claude-codex-mailbox          # or: npm i -g <file>.tgz / github:USER/claude-codex-mailbox
+npm install -g claude-codex-desktop-chat-pairing          # or: npm i -g <file>.tgz / github:randy-aloop/Claude-Codex-Desktop-Chat
 reviewloop-install
 ```
 

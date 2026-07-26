@@ -1,9 +1,9 @@
 {
-  "name": "claude-codex-mailbox",
+  "name": "claude-codex-desktop-chat-pairing",
   "version": "0.5.0",
   "bin": { "reviewloop-install": "./install.js", "reviewloop-daemon": "./daemon.js", "rl": "./rl.js" },
   "files": ["shim.js", "daemon.js", "rl.js", "install.js", "prompts.md", "config.json.example", "README.md", "LICENSE"],
-  "description": "Local MCP bridge pairing a Codex worker thread with a Claude reviewer thread — opt-in keys, ticketed handoffs, human-gated rulings, append-only ledger. Zero dependencies.",
+  "description": "Claude-Codex Desktop Chat Pairing — a local MCP bridge with opt-in keys, ticketed handoffs, human-gated rulings, and an append-only ledger. Zero dependencies.",
   "license": "MIT",
   "engines": { "node": ">=18" },
   "keywords": ["mcp", "codex", "claude", "agent-collaboration", "review-loop", "model-context-protocol"],
