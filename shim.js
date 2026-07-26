@@ -18,7 +18,7 @@ const { spawn } = require('child_process');
 const HOME = process.env.REVIEWLOOP_HOME || path.join(os.homedir(), '.reviewloop');
 const PORTFILE = path.join(HOME, 'daemon.json');
 const DAEMON = path.join(__dirname, 'daemon.js');
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 
 /* ---------------- daemon client ---------------- */
 
@@ -100,8 +100,15 @@ const TOOLS = [
       label: str('optional short run name'),
       repo: str('optional absolute path to the git repo the worker operates on'),
       reviewer_paths: { type: 'array', items: { type: 'string' }, description: 'optional path prefixes owned by the reviewer (records, scorecards)' },
-      stop: { type: 'object', description: 'user-defined stop policy: {max_directives?: number, max_minutes?: number, on_context_warning?: "finish_unit"}. Omitted fields = no limit; context_warning and reviewer judgement (done:true) always apply.', additionalProperties: true }
+      stop: { type: 'object', description: 'user-defined stop policy: {max_directives?: number, max_minutes?: number, on_context_warning?: "finish_unit"}. Omitted fields = no limit; context_warning and reviewer judgement (done:true) always apply.', additionalProperties: true },
+      reviewer_mode: str('"live" (default — a Claude session you keep open; warns about idle polling cost) or "subprocess" (daemon runs claude --resume per submission; zero idle cost; warns that you will not watch it think and that the CLI must reach the thread)'),
+      approval: str('"human" (default — proposed rulings wait for loop_approve) or "auto" (subprocess rulings applied with NO human gate — warned, not recommended for work that writes files)')
     }, ['codex_thread_id', 'claude_thread_id'])
+  },
+  {
+    name: 'loop_approve',
+    description: 'Approve, edit-then-approve, or reject a subprocess-mode proposed ruling. decision: "approve" | "reject"; relay_edit optionally replaces the relay text before delivery.',
+    inputSchema: S({ key: str('reviewer key'), ticket: str('ticket id'), decision: str('"approve" or "reject"'), relay_edit: str('optional replacement relay text') }, ['key', 'ticket', 'decision'])
   },
   {
     name: 'loop_confirm',

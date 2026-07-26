@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 
 const HOME = process.env.REVIEWLOOP_HOME || path.join(os.homedir(), '.reviewloop');
 const PORTFILE = path.join(HOME, 'daemon.json');
@@ -119,9 +119,9 @@ function openTickets(pairId) {
 
 const methods = {
 
-  health() { return { app: 'reviewloop', pid: process.pid, version: '0.4.0' }; },
+  health() { return { app: 'reviewloop', pid: process.pid, version: '0.5.0' }; },
 
-  loop_setup({ codex_thread_id, claude_thread_id, label, repo, reviewer_paths, stop }) {
+  loop_setup({ codex_thread_id, claude_thread_id, label, repo, reviewer_paths, stop, reviewer_mode, approval }) {
     if (!codex_thread_id || !claude_thread_id) throw uerr('codex_thread_id and claude_thread_id are both required.');
     if (repo && !fs.existsSync(repo)) throw uerr(`repo path does not exist: ${repo}`);
     const lab = (label && String(label).trim()) || 'run-' + rid('X').slice(2).toLowerCase();
@@ -133,25 +133,63 @@ const methods = {
       max_minutes: stop && Number.isFinite(Number(stop.max_minutes)) ? Number(stop.max_minutes) : null,
       on_context_warning: (stop && stop.on_context_warning) || 'finish_unit'
     };
+    const mode = reviewer_mode === 'subprocess' ? 'subprocess' : 'live';
+    const appr = approval === 'auto' ? 'auto' : 'human';
+    if (reviewer_mode && !['live', 'subprocess'].includes(reviewer_mode)) throw uerr('reviewer_mode must be "live" or "subprocess".');
     state.keys[wkey] = { key: wkey, role: 'worker', label: lab, created: now(), last_seen: now(), pair: id };
     state.keys[rkey] = { key: rkey, role: 'reviewer', label: lab, created: now(), last_seen: now(), pair: id };
     state.pairs[id] = {
       id, worker: wkey, reviewer: rkey, label: lab, repo: repo || null, reviewer_paths: rpaths,
       dseq: 0, created: now(), ended: null, winding_down: false, stop: stopPolicy,
+      reviewer_mode: mode, approval: appr,
       setup: {
         codex_thread_id: String(codex_thread_id).trim(),
         claude_thread_id: String(claude_thread_id).trim(),
-        confirmed: { worker: false, reviewer: false }
+        confirmed: { worker: false, reviewer: mode === 'subprocess' }
       }
     };
     saveState();
-    ledger('setup', { pair: id, label: lab, codex_thread_id, claude_thread_id, repo: repo || null });
+    ledger('setup', { pair: id, label: lab, codex_thread_id, claude_thread_id, repo: repo || null, reviewer_mode: mode, approval: appr });
+    const warnings = mode === 'subprocess' ? [
+      'SUBPROCESS MODE: no live reviewer session. You will NOT watch the reviewer think — rulings arrive as proposals for approval (loop_approve), or are applied automatically if approval:"auto".',
+      appr === 'auto'
+        ? 'approval:"auto" REMOVES THE HUMAN GATE ENTIRELY: reviewer rulings are applied to the worker with no human in the loop. The stop policy and your ability to abort are the only remaining controls. Not recommended for work that writes files.'
+        : 'Approve or reject each proposed ruling with loop_approve {ticket, decision} (rl.js works: node rl.js loop_approve key=' + rkey + ' ticket=... decision=approve).',
+      `Requires the Claude Code CLI with access to thread ${String(claude_thread_id).trim()} from cwd ${repo || 'your home directory'}. VERIFY BEFORE RELYING ON IT: claude --resume ${String(claude_thread_id).trim()} -p "reply OK" — if that fails, review subprocesses will fail and the worker will wait indefinitely.`,
+      'Each review pays the full reviewer-thread context as input — cheap while the thread is small, growing with every ruling appended.'
+    ] : [
+      'LIVE MODE token cost: an idle listening session re-polls roughly every 150s (~24 inferences/hour paying full thread context, per side). Park the loop with done:true whenever you are not actively supervising; re-arming is one paste.'
+    ];
     return {
       pair: id, label: lab, worker_key: wkey, reviewer_key: rkey,
+      reviewer_mode: mode, approval: appr,
+      warnings,
       worker_prompt: workerPrompt(wkey, state.pairs[id]),
-      reviewer_prompt: reviewerPrompt(rkey, state.pairs[id]),
-      next: 'Paste worker_prompt into the Codex thread and reviewer_prompt into the Claude thread. Each side confirms with loop_confirm and reports success or failure. The pair is live once both have confirmed.'
+      reviewer_prompt: mode === 'live' ? reviewerPrompt(rkey, state.pairs[id]) : '(none — subprocess mode drives the reviewer thread directly via claude --resume; nothing is pasted into it)',
+      next: mode === 'live'
+        ? 'Paste worker_prompt into the Codex thread and reviewer_prompt into the Claude thread. Each side confirms with loop_confirm and reports success or failure.'
+        : 'Paste worker_prompt into the Codex thread. The reviewer side needs no paste — reviews launch automatically on each submission. Heed the warnings above.'
     };
+  },
+
+  loop_approve({ key, ticket, decision, relay_edit }) {
+    const rec = keyOf({ key });
+    if (rec.role !== 'reviewer') throw uerr('loop_approve requires the reviewer key.');
+    const p = pairOf(rec);
+    const t = state.tickets[(ticket || '').trim().toUpperCase()];
+    if (!t || t.pair !== p.id) throw uerr(`Unknown ticket "${ticket}" for this pair.`);
+    if (t.ruling) throw uerr(`Ticket ${t.id} is already ruled.`);
+    if (!t.proposed) throw uerr(`Ticket ${t.id} has no proposed ruling${t.review_error ? ` (review error: ${t.review_error})` : ''}.`);
+    if (decision === 'reject') {
+      ledger('proposal_rejected', { pair: p.id, ticket: t.id });
+      t.review_error = 'proposal rejected by human'; t.proposed = null; saveState();
+      return { ticket: t.id, status: 'rejected', note: 'Proposal discarded. Submit a ruling manually (submit_ruling) or re-trigger review.' };
+    }
+    const ruling = { ...t.proposed };
+    if (relay_edit && String(relay_edit).trim()) ruling.relay = String(relay_edit).trim();
+    const res = applyRuling(p, t, ruling);
+    ledger('proposal_approved', { pair: p.id, ticket: t.id, edited: !!relay_edit });
+    return { ...res, note: 'Proposal approved and delivered to the worker.' };
   },
 
   loop_confirm({ key, thread_id }) {
@@ -261,6 +299,9 @@ const methods = {
         paired: !!p,
         pair: p ? {
           id: p.id, label: p.label, repo: p.repo,
+          reviewer_mode: p.reviewer_mode || 'live', approval: p.approval || 'human',
+          pending_approval: Object.values(state.tickets).filter(t => t.pair === p.id && t.proposed && !t.ruling).map(t => ({ ticket: t.id, verdict: t.proposed.verdict })),
+          review_errors: Object.values(state.tickets).filter(t => t.pair === p.id && t.review_error && !t.ruling).map(t => ({ ticket: t.id, error: t.review_error })),
           winding_down: !!p.winding_down,
           setup: p.setup ? {
             codex_thread_id: p.setup.codex_thread_id, claude_thread_id: p.setup.claude_thread_id,
@@ -311,10 +352,12 @@ const methods = {
     saveState();
     ledger('submitted', { pair: p.id, ticket: id, summary: String(handoff.summary || handoff.stop_reason || '').slice(0, 300) });
     wake('work:' + p.id, { ticket: id });
+    if (p.reviewer_mode === 'subprocess') launchReview(p, state.tickets[id]);
     return {
       ticket: id,
       status: 'submitted',
       warnings,
+      review: p.reviewer_mode === 'subprocess' ? 'review subprocess launched' : undefined,
       next: `Call await_ruling with ticket "${id}". It returns status:"pending" on timeout — call it again until you get the ruling.`
     };
   },
@@ -329,12 +372,17 @@ const methods = {
     const ms = clampAwait(timeout_ms);
     const res = await waitFor('ruling:' + t.id, ms);
     if (res.unlinked) return { status: 'unlinked', message: 'The pair was unlinked while waiting.' };
-    if (res.timeout) return {
-      status: 'pending',
-      ticket: t.id,
-      waited_ms: ms,
-      message: 'No ruling yet (the human may still be reviewing). Call await_ruling again with the same ticket.'
-    };
+    if (res.timeout) {
+      const fresh = state.tickets[t.id];
+      if (fresh.ruling) return ruled(fresh);
+      return {
+        status: 'pending',
+        ticket: t.id,
+        waited_ms: ms,
+        review_state: fresh.review_error ? `REVIEW FAILED: ${fresh.review_error} — human intervention needed` : (fresh.proposed ? 'ruling proposed, awaiting human approval' : 'under review'),
+        message: 'No ruling yet. Call await_ruling again with the same ticket.'
+      };
+    }
     return ruled(state.tickets[t.id]);
   },
 
@@ -364,44 +412,7 @@ const methods = {
     if (!t || t.pair !== p.id) throw uerr(`Unknown ticket "${ticket}" for this pair.`);
     if (t.ruling) throw uerr(`Ticket ${t.id} already has a ruling.`);
     if (!ruling || typeof ruling !== 'object') throw uerr('ruling must be a JSON object.');
-    const VER = ['approve', 'revise', 'rule', 'abort'];
-    if (!VER.includes(ruling.verdict)) throw uerr(`ruling.verdict must be one of ${VER.join(' | ')}.`);
-    if (ruling.verdict !== 'abort' && (!ruling.relay || !String(ruling.relay).trim())) {
-      throw uerr('ruling.relay is required (the exact text handed to the worker, verbatim) unless verdict is "abort".');
-    }
-    const warnings = [];
-    if (ruling.verdict !== 'abort' && !ruling.stop_when) warnings.push('No stop_when — the worker will pick its own stopping point.');
-    if (ruling.done === undefined) ruling.done = false;
-    const pol = p.stop || {};
-    if (pol.max_directives && p.dseq + 1 > pol.max_directives && !ruling.done) {
-      throw uerr(`Stop policy: directive budget (${pol.max_directives}) exhausted — this ruling must carry done:true to close the run.`);
-    }
-    p.dseq = (p.dseq || 0) + 1;
-    if (pol.max_directives && p.dseq >= pol.max_directives && !p.winding_down) {
-      p.winding_down = true; ledger('winding_down', { pair: p.id, trigger: `stop policy: directive ${p.dseq}/${pol.max_directives}` });
-    }
-    if (pol.max_minutes && (now() - p.created) > pol.max_minutes * 60_000 && !p.winding_down) {
-      p.winding_down = true; ledger('winding_down', { pair: p.id, trigger: `stop policy: ${pol.max_minutes} minutes elapsed` });
-    }
-    t.ruling = {
-      directive_id: p.dseq,
-      verdict: ruling.verdict,
-      relay: ruling.relay || '',
-      stop_when: ruling.stop_when || null,
-      expected: ruling.expected || null,
-      do_not: Array.isArray(ruling.do_not) ? ruling.do_not : [],
-      codex_settings: ruling.codex_settings && typeof ruling.codex_settings === 'object' ? ruling.codex_settings : null,
-      done: !!ruling.done
-    };
-    t.ruled_at = now();
-    if (ruling.standing_rule && String(ruling.standing_rule).trim()) {
-      appendRule(String(ruling.standing_rule).trim());
-      ledger('standing_rule', { pair: p.id, ticket: t.id, rule: String(ruling.standing_rule).trim() });
-    }
-    saveState();
-    ledger('ruled', { pair: p.id, ticket: t.id, verdict: t.ruling.verdict, done: t.ruling.done });
-    wake('ruling:' + t.id, { ticket: t.id });
-    return { ticket: t.id, status: 'ruled', verdict: t.ruling.verdict, done: t.ruling.done, warnings };
+    return applyRuling(p, t, ruling);
   },
 
   get_standing_rules() {
@@ -452,6 +463,97 @@ const methods = {
     }
   }
 };
+
+function applyRuling(p, t, ruling) {
+  const VER = ['approve', 'revise', 'rule', 'abort'];
+  if (!VER.includes(ruling.verdict)) throw uerr(`ruling.verdict must be one of ${VER.join(' | ')}.`);
+  if (ruling.verdict !== 'abort' && (!ruling.relay || !String(ruling.relay).trim())) {
+    throw uerr('ruling.relay is required (the exact text handed to the worker, verbatim) unless verdict is "abort".');
+  }
+  const warnings = [];
+  if (ruling.verdict !== 'abort' && !ruling.stop_when) warnings.push('No stop_when — the worker will pick its own stopping point.');
+  if (ruling.done === undefined) ruling.done = false;
+  const pol = p.stop || {};
+  if (pol.max_directives && p.dseq + 1 > pol.max_directives && !ruling.done) {
+    throw uerr(`Stop policy: directive budget (${pol.max_directives}) exhausted — this ruling must carry done:true to close the run.`);
+  }
+  p.dseq = (p.dseq || 0) + 1;
+  if (pol.max_directives && p.dseq >= pol.max_directives && !p.winding_down) {
+    p.winding_down = true; ledger('winding_down', { pair: p.id, trigger: `stop policy: directive ${p.dseq}/${pol.max_directives}` });
+  }
+  if (pol.max_minutes && (now() - p.created) > pol.max_minutes * 60_000 && !p.winding_down) {
+    p.winding_down = true; ledger('winding_down', { pair: p.id, trigger: `stop policy: ${pol.max_minutes} minutes elapsed` });
+  }
+  t.ruling = {
+    directive_id: p.dseq,
+    verdict: ruling.verdict,
+    relay: ruling.relay || '',
+    stop_when: ruling.stop_when || null,
+    expected: ruling.expected || null,
+    do_not: Array.isArray(ruling.do_not) ? ruling.do_not : [],
+    codex_settings: ruling.codex_settings && typeof ruling.codex_settings === 'object' ? ruling.codex_settings : null,
+    done: !!ruling.done
+  };
+  t.ruled_at = now();
+  t.proposed = null;
+  if (ruling.standing_rule && String(ruling.standing_rule).trim()) {
+    appendRule(String(ruling.standing_rule).trim());
+    ledger('standing_rule', { pair: p.id, ticket: t.id, rule: String(ruling.standing_rule).trim() });
+  }
+  saveState();
+  ledger('ruled', { pair: p.id, ticket: t.id, verdict: t.ruling.verdict, done: t.ruling.done });
+  wake('ruling:' + t.id, { ticket: t.id });
+  return { ticket: t.id, status: 'ruled', verdict: t.ruling.verdict, done: t.ruling.done, warnings };
+}
+
+function reviewerCmd(p, prompt) {
+  let tpl = null;
+  try { tpl = JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8')).reviewer_cmd; } catch {}
+  if (!Array.isArray(tpl) || !tpl.length) {
+    tpl = ['claude', '--resume', '{thread}', '-p', '{prompt}', '--output-format', 'json'];
+  }
+  return tpl.map(a => String(a).replace('{thread}', p.setup.claude_thread_id).replace('{prompt}', prompt));
+}
+
+function launchReview(p, t) {
+  const prompt = `You are the reviewer in a paired review loop (pair ${p.id}, run "${p.label}"). The worker (Codex) submitted this handoff for ticket ${t.id}:\n\n${JSON.stringify(t.handoff, null, 2)}\n\nReview it against the repository${p.repo ? ` at ${p.repo}` : ''} — verify claims against git where possible, do not trust the prose. Then output ONLY a JSON object, no other text:\n{"verdict":"approve|revise|rule|abort","review":"your reasoning","relay":"exact instruction text for the worker","stop_when":"observable stop condition","expected":{},"do_not":[],"standing_rule":null,"done":false}\nSet done:true only if the whole task is complete${p.winding_down ? ' — NOTE: the pair is winding down (context/stop policy), close with done:true' : ''}.`;
+  const [cmd, ...args] = reviewerCmd(p, prompt);
+  ledger('review_launched', { pair: p.id, ticket: t.id, mode: 'subprocess' });
+  const child = spawn(cmd, args, {
+    cwd: p.repo || os.homedir(), windowsHide: true, shell: process.platform === 'win32',
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let out = '', err = '';
+  child.stdout.on('data', c => out += c);
+  child.stderr.on('data', c => err += c);
+  const killer = setTimeout(() => { try { child.kill(); } catch {} }, 300_000);
+  child.on('close', (code) => {
+    clearTimeout(killer);
+    try {
+      if (code !== 0) throw new Error(`reviewer exited ${code}: ${(err || out).slice(0, 400)}`);
+      let text = out;
+      try { const wrap = JSON.parse(out); if (wrap && typeof wrap.result === 'string') text = wrap.result; } catch {}
+      const a = text.indexOf('{'), b = text.lastIndexOf('}');
+      if (a < 0 || b <= a) throw new Error('no JSON object in reviewer output');
+      const ruling = JSON.parse(text.slice(a, b + 1));
+      if (p.approval === 'auto') {
+        applyRuling(p, t, ruling);
+        ledger('auto_applied', { pair: p.id, ticket: t.id, verdict: ruling.verdict });
+      } else {
+        t.proposed = ruling; saveState();
+        ledger('review_proposed', { pair: p.id, ticket: t.id, verdict: ruling.verdict });
+      }
+    } catch (e) {
+      t.review_error = e.message; saveState();
+      ledger('review_failed', { pair: p.id, ticket: t.id, error: e.message });
+    }
+  });
+  child.on('error', (e) => {
+    clearTimeout(killer);
+    t.review_error = `spawn failed: ${e.message}`; saveState();
+    ledger('review_failed', { pair: p.id, ticket: t.id, error: t.review_error });
+  });
+}
 
 function clampAwait(ms) {
   const n = Number(ms);
