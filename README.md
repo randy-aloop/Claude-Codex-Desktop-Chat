@@ -1,16 +1,16 @@
 # Claude-Codex Desktop Chat Pairing
 
-Connect one Codex task to one Claude Code conversation so they can work in a supervised review loop.
+Connect one Codex Desktop task to one Claude Desktop conversation so they can work in a supervised review loop.
 
 > [!IMPORTANT]
-> Despite the project name, the Claude side is **Claude Code**—not the Claude Desktop app and not a chat on claude.ai.
+> The two conversation apps are **Codex Desktop** and **Claude Desktop**. The included installer still uses the separate Claude Code CLI for automatic MCP registration; Claude Desktop-only registration is not automated by this version.
 
 > [!WARNING]
 > This project is experimental. It is a coordination helper, not a security boundary, sandbox, or permission system. Try it on a test repository before using it on important work.
 
 ## What it does
 
-You give a job to Claude Code. Claude proposes a small instruction for Codex. After you approve it, Codex performs that unit of work and reports back. Claude reviews the result, then proposes the next instruction.
+You give a job to Claude Desktop. Claude proposes a small instruction for Codex Desktop. After you approve it, Codex performs that unit of work and reports back. Claude reviews the result, then proposes the next instruction.
 
 A small helper running on your computer passes the messages and keeps local history.
 
@@ -19,7 +19,7 @@ You
  │
  │ approve the next instruction
  ▼
-Claude Code reviewer
+Claude Desktop reviewer
  │
  │ ruling
  ▼
@@ -33,22 +33,23 @@ Codex worker
  └────────────────────────────► Claude reviews again
 ```
 
-Claude does not directly control or type into a Codex task. Codex must opt into the loop and call the helper itself. The helper also cannot wake a Codex task from outside the Codex app.
+Claude does not directly control or type into a Codex Desktop task. Codex must opt into the loop and call the helper itself. The helper also cannot wake a Codex Desktop task from outside the app.
 
 ## Before you start
 
 You will need:
 
-- A working Codex installation.
-- A working **Claude Code CLI** installation.
+- A working **Codex Desktop** installation.
+- A working **Claude Desktop** installation.
+- The **Claude Code CLI** if you use the included automatic Claude registration or advanced subprocess mode.
 - Node.js 18 or newer.
-- The exact Codex task/thread ID you want to use.
-- The exact Claude Code session ID you want to use.
+- The exact Codex Desktop task/thread ID you want to use.
+- The Claude Desktop conversation/session identifier you want to use.
 - A project folder for Codex to work in.
 - Basic comfort opening PowerShell and editing a small JSON file.
 - Git if you want the optional change checks.
 
-Check the two required command-line tools:
+Check Node.js and, if you will use the included Claude registration, the Claude Code CLI:
 
 ```powershell
 node --version
@@ -57,9 +58,9 @@ claude --version
 
 The Node version must be 18 or newer.
 
-This repository does not include a tool for discovering Codex or Claude session IDs. Where those IDs are displayed depends on the app and version you use. Do not guess them: a pairing cannot be set up without the exact IDs.
+This repository does not include a tool for discovering Codex Desktop or Claude Desktop conversation IDs. Where those IDs are displayed depends on the app and version you use. Do not guess them: a pairing cannot be set up without the identifiers you intend to use.
 
-Normal Codex and Claude model usage—and therefore normal usage costs—still apply.
+Normal Codex Desktop and Claude Desktop model usage—and therefore normal usage costs—still apply.
 
 ## Safety first
 
@@ -76,7 +77,7 @@ Before using the loop:
 - Do not expose the helper to the internet or another machine.
 - Give Codex and Claude only the filesystem permissions you are comfortable with them already having.
 
-In live mode, “show the ruling to the human before submitting it” is an instruction followed by Claude Code. It is a human procedure, not a technically enforced permission gate.
+In live mode, “show the ruling to the human before submitting it” is an instruction followed in the Claude Desktop conversation. It is a human procedure, not a technically enforced permission gate.
 
 `reviewer_paths` only labels changes for reporting. It does not prevent either assistant from reading or writing those paths.
 
@@ -111,7 +112,7 @@ node .\install.js
 The installer changes local configuration and state:
 
 - It adds a marked `reviewloop` block to Codex `config.toml` and writes a backup.
-- It asks the Claude Code CLI to add a user-level `reviewloop` tool.
+- It asks the Claude Code CLI to add a user-level `reviewloop` tool. This is CLI registration; verify separately that Claude Desktop can see the server.
 - It creates or updates `~/.reviewloop/config.json`.
 - It runs a local protocol self-test, which starts the helper and creates test records.
 
@@ -124,11 +125,11 @@ Read the output carefully. A successful setup should report:
 
 A line beginning with `!` is a warning that part of the setup may not be complete. The final `Done` message does not cancel earlier warnings.
 
-The self-test checks the local review protocol. It does not prove that the Codex and Claude applications can both use it.
+The self-test checks the local review protocol. It does not prove that Codex Desktop and Claude Desktop can both use it.
 
 ### 4. Restart both applications
 
-Completely restart Codex and Claude Code. The tools load when the applications start and appear under the internal name `reviewloop`.
+Completely restart Codex Desktop and Claude Desktop. The tools load when the applications start and appear under the internal name `reviewloop`.
 
 ### macOS and Linux
 
@@ -182,7 +183,7 @@ node ./rl.js loop_setup '@/full/path/to/reviewloop-setup.json'
 The command returns:
 
 - A worker key for Codex.
-- A reviewer key for Claude Code.
+- A reviewer key for Claude Desktop.
 - A `worker_prompt`.
 - A `reviewer_prompt`.
 - Warnings for the selected mode.
@@ -191,8 +192,8 @@ Treat the keys and returned prompts as sensitive.
 
 ### 3. Paste the generated prompts
 
-- Paste the complete `worker_prompt` into the selected Codex task.
-- Paste the complete `reviewer_prompt` into the selected Claude Code session.
+- Paste the complete `worker_prompt` into the selected Codex Desktop task.
+- Paste the complete `reviewer_prompt` into the selected Claude Desktop conversation.
 
 Both sides will call `loop_confirm`. A submitted ID that does not match the setup returns `PAIRING FAILED`.
 
@@ -200,7 +201,7 @@ Both sides will call `loop_confirm`. A submitted ID that does not match the setu
 
 ### 4. Give Claude the task
 
-After both sides are ready, give the task to Claude Code. Claude may also ask which Codex model and reasoning effort you want.
+After both sides are ready, give the task to Claude Desktop. Claude may also ask which Codex model and reasoning effort you want.
 
 The normal loop is:
 
@@ -211,7 +212,7 @@ The normal loop is:
 5. Codex submits a report and waits.
 6. Claude reviews the report and proposes the next instruction.
 
-In live mode, keep the Claude Code session open and supervising the loop.
+In live mode, keep the Claude Desktop conversation open and supervising the loop.
 
 ## Check or stop a pairing
 
@@ -264,9 +265,9 @@ Codex and Claude also need to find `node` through their own application environm
 
 ### `claude` is not recognized
 
-Install and sign in to Claude Code. This project does not connect to Claude Desktop or claude.ai.
+The `claude` command belongs to the separate Claude Code CLI, not Claude Desktop. Install and sign in to the CLI if you want the included installer to perform Claude registration or if you want to use subprocess mode.
 
-The installer may print a manual `.mcp.json` configuration when Claude Code registration fails. Manual configuration is an advanced fallback; do not assume the installation succeeded just because the installer reached its final message.
+The installer may print a manual `.mcp.json` configuration when Claude Code CLI registration fails. That fallback targets the Claude Code CLI and is not proof that Claude Desktop is configured. Do not assume the installation succeeded just because the installer reached its final message.
 
 ### The installer says no Codex `config.toml` was found
 
@@ -278,7 +279,7 @@ node .\install.js --codex-config "C:\FULL\PATH\TO\config.toml"
 
 ### The reviewloop tools are missing
 
-- Restart Codex and Claude Code.
+- Restart Codex Desktop and Claude Desktop.
 - Check whether the installer wrote to the correct Codex configuration.
 - Make sure the downloaded repository folder has not moved since installation.
 - Make sure `node` is available to both applications.
@@ -309,11 +310,11 @@ node .\rl.js loop_setup '@C:\FULL\PATH\TO\reviewloop-setup.json'
 
 A Codex Desktop task cannot be awakened externally. It must still have an active listening turn or be resumed manually.
 
-In live mode, Claude Code repeatedly waits for work. If that listening turn ends, paste the generated reviewer prompt again to re-arm it.
+In live mode, the Claude Desktop conversation repeatedly waits for work. If that listening turn ends, paste the generated reviewer prompt again to re-arm it.
 
 ### Subprocess review fails
 
-Subprocess mode requires this command to work for the selected Claude Code session:
+Subprocess mode is a Claude Code CLI feature rather than a Claude Desktop conversation feature. It requires this command to work for the selected Claude Code CLI session:
 
 ```powershell
 claude --resume PASTE_SESSION_ID_HERE -p "reply OK"
@@ -347,11 +348,11 @@ node .\daemon.js --stop
 node .\install.js --uninstall --codex-config "C:\FULL\PATH\TO\config.toml"
 ```
 
-The uninstaller removes the marked Codex configuration block and asks Claude Code to remove the user-level registration. It keeps backups of changed Codex configuration files.
+The uninstaller removes the marked Codex configuration block and asks the Claude Code CLI to remove its user-level registration. It does not remove any Claude Desktop configuration you added manually. It keeps backups of changed Codex configuration files.
 
 Read the output for warnings. An unmarked or manually created registration may need to be removed manually.
 
-### 3. Restart Codex and Claude Code
+### 3. Restart Codex Desktop and Claude Desktop
 
 This unloads the removed registration.
 
@@ -382,8 +383,8 @@ You can then delete the downloaded repository folder.
 
 | Mode | How it works | Approval behavior | Main trade-off |
 | --- | --- | --- | --- |
-| `live` | A Claude Code session stays open and calls `await_work` repeatedly | Approval is a procedure followed in the conversation | Easier to watch, but idle polling can use model tokens |
-| `subprocess` | The helper runs `claude --resume` after each Codex submission | With `approval: "human"`, proposals wait for `loop_approve` | No idle reviewer polling, but setup and failure handling are more technical |
+| `live` | A Claude Desktop conversation stays open and calls `await_work` repeatedly | Approval is a procedure followed in the conversation | Easier to watch, but idle polling can use model tokens |
+| `subprocess` | The helper runs the Claude Code CLI with `claude --resume` after each Codex submission | With `approval: "human"`, proposals wait for `loop_approve` | Does not use a live Claude Desktop conversation; setup and failure handling are more technical |
 | Subprocess with `approval: "auto"` | Proposed rulings are immediately applied | No human approval gate | Not recommended for work that writes files |
 
 Subprocess mode is intended for experienced users. Test it on a non-sensitive repository first.
@@ -437,21 +438,23 @@ The Git check is only a helper. It does not protect files, replace a human revie
 
 | File | Purpose |
 | --- | --- |
-| `install.js` | Adds or removes Codex and Claude Code registrations |
+| `install.js` | Adds or removes Codex and Claude Code CLI registrations |
 | `shim.js` | The tool entry point used by both applications |
 | `daemon.js` | The local pairing, ticket, state, and review process |
 | `rl.js` | A small command-line client for the local helper |
 | `prompts.md` | Reference prompts; normal setup generates pair-specific prompts |
 | `config.json.example` | Example local configuration structure |
 
-The project has no third-party npm runtime packages, but it still requires Node.js, Codex, and Claude Code.
+The project has no third-party npm runtime packages, but it still requires Node.js, Codex Desktop, and Claude Desktop. The current automated Claude registration and subprocess mode additionally require the Claude Code CLI.
 
 </details>
 
 ## Known limits
 
 - This is a terminal-and-JSON workflow, not a one-click desktop interface.
-- It works with Claude Code, not Claude Desktop or a browser chat.
+- The intended conversation apps are Claude Desktop and Codex Desktop.
+- The current installer automates Claude Code CLI registration, not Claude Desktop configuration.
+- Subprocess mode uses Claude Code CLI and does not run through a live Claude Desktop conversation.
 - It does not discover thread or session IDs for you.
 - It cannot wake a Codex Desktop task from outside the app.
 - Live-mode waiting can consume model tokens while idle.
